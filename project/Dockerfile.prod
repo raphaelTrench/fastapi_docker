@@ -1,6 +1,8 @@
 # pull official base image
 FROM python:3.8-slim-buster
 
+LABEL org.opencontainers.image.source="https://github.com/raphaelTrench/fastapi_docker"
+
 # create directory for the app user
 RUN mkdir -p /home/app  \
     && addgroup --system app && adduser --system --group app
