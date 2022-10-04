@@ -1,46 +1,80 @@
+###########
+# BUILDER #
+###########
+
 # pull official base image
-FROM python:3.8-slim-buster
-
-LABEL org.opencontainers.image.source="https://github.com/raphaelTrench/fastapi_docker"
-
-# create directory for the app user
-RUN mkdir -p /home/app  \
-    && addgroup --system app && adduser --system --group app
-
-# set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_VERSION_CHECK=on \
-    POETRY_VERSION=1.2.0 \
-    POETRY_HOME="/opt/poetry" \
-    POETRY_NO_INTERACTION=1 \
-    PATH=/usr/local/bin:$PATH \
-    ENVIRONMENT=prod \
-    TESTING=0 \
-    HOME=/home/app \
-    APP_HOME=/home/app/web
-
-RUN mkdir $APP_HOME \
-    && chown -R app:app $APP_HOME
-WORKDIR $APP_HOME
+FROM python:3.10.1-slim-buster as builder
 
 # install system dependencies
 RUN apt-get update \
-    && apt-get -y install --no-install-recommends \
-        netcat gcc postgresql \
-    && pip install --no-cache-dir "poetry==$POETRY_VERSION" \
-    && apt-get clean
+  && apt-get -y install gcc postgresql \
+  && apt-get clean
+
+# set work directory
+WORKDIR /usr/src/app
+
+# set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# install dependencies
+RUN pip install --upgrade pip
+COPY ./requirements.txt .
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /usr/src/app/wheels -r requirements.txt
+
+# lint
+COPY . /usr/src/app/
+RUN pip install black==21.12b0 flake8==4.0.1 isort==5.10.1
+RUN flake8 .
+RUN black --exclude=migrations .
+RUN isort .
+
+
+#########
+# FINAL #
+#########
+
+# pull official base image
+FROM python:3.10.1-slim-buster
+
+# create directory for the app user
+RUN mkdir -p /home/app
+
+# create the app user
+RUN addgroup --system app && adduser --system --group app
+
+# create the appropriate directories
+ENV HOME=/home/app
+ENV APP_HOME=/home/app/web
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+
+# set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+ENV ENVIRONMENT prod
+ENV TESTING 0
+
+# install system dependencies
+RUN apt-get update \
+  && apt-get -y install netcat gcc postgresql \
+  && apt-get clean
 
 # install python dependencies
-WORKDIR /usr/src/app
-COPY ./pyproject.toml ./poetry.lock ./
-RUN poetry  config virtualenvs.create false \
-    && poetry install --no-root \
-    && poetry add uvicorn==0.16.0 --extras standard
+COPY --from=builder /usr/src/app/wheels /wheels
+COPY --from=builder /usr/src/app/requirements.txt .
+RUN pip install --upgrade pip
+RUN pip install --no-cache /wheels/*
+RUN pip install "uvicorn[standard]==0.16.0"
 
 # add app
 COPY . .
 
+# chown all the files to the app user
+RUN chown -R app:app $HOME
+
+# change to the app user
 USER app
-# run entrypoint.sh
+
+# run gunicorn
 CMD gunicorn --bind 0.0.0.0:$PORT app.main:app -k uvicorn.workers.UvicornWorker
